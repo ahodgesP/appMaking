@@ -1,0 +1,9 @@
+.build/
+.swiftpm/
+.DS_Store
+jointodo.json
+*.jointodo.json
+dist/
+DistSupport/AppIcon.iconset/
+xcuserdata/
+*.xcuserstate
