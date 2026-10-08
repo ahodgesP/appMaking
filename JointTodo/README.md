@@ -23,6 +23,7 @@ version.
 ## Features
 
 - Projects, lists, tasks, and nested subtasks
+- Collapsible subtask groups at every nesting level
 - Native macOS GUI with inline renaming and multi-select project deletion
 - Click-and-drag project range selection
 - Automatic parent/list completion when all children are complete
@@ -80,6 +81,7 @@ selected project, and the right column contains the selected list's tasks.
 - Double-click a name to rename it; Return saves and Escape cancels.
 - Use the input above the task area to add a task.
 - Use the plus button beside a task to add a subtask.
+- Use the chevron beside a task to collapse or expand its subtasks.
 - Click a completion circle to change status.
 - Command-click, Shift-click, or click-drag to select multiple projects.
 - Press Delete to remove selected projects or the selected list.

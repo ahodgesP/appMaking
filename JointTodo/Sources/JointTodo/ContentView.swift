@@ -386,12 +386,31 @@ private struct TaskRow: View {
     let list: TodoList
     let item: TaskItem
     let depth: Int
+    @State private var isExpanded = true
 
     private var children: [TaskItem] { list.children(of: item.id) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 9) {
+                if children.isEmpty {
+                    Color.clear
+                        .frame(width: 14, height: 20)
+                } else {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            isExpanded.toggle()
+                        }
+                    } label: {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .frame(width: 14, height: 20)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(isExpanded ? "Collapse sub-items" : "Expand sub-items")
+                    .floatingHelp(isExpanded ? "Collapse sub-items" : "Expand sub-items")
+                }
                 CompletionButton(isCompleted: item.isCompleted) {
                     store.setItemCompletion(in: list.id, itemID: item.id, completed: !item.isCompleted)
                 }
@@ -406,6 +425,7 @@ private struct TaskRow: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                 Button {
+                    isExpanded = true
                     store.addItem(to: list.id, parentID: item.id)
                 } label: {
                     Image(systemName: "plus.circle")
@@ -425,8 +445,10 @@ private struct TaskRow: View {
             .padding(.horizontal, 8)
             .background(depth == 0 ? Color.secondary.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 7))
 
-            ForEach(children) { child in
-                TaskRow(list: list, item: child, depth: depth + 1)
+            if isExpanded {
+                ForEach(children) { child in
+                    TaskRow(list: list, item: child, depth: depth + 1)
+                }
             }
         }
     }
