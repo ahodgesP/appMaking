@@ -1,47 +1,18 @@
 import SwiftUI
 import Combine
 import AppKit
-import CoreTransferable
-import UniformTypeIdentifiers
 import JointTodoCore
-
-private extension UTType {
-    static let jointTodoProject = UTType(exportedAs: "local.jointodo.project")
-    static let jointTodoList = UTType(exportedAs: "local.jointodo.list")
-    static let jointTodoTask = UTType(exportedAs: "local.jointodo.task")
-}
-
-private struct ProjectDragPayload: Codable, Transferable {
-    let projectID: UUID
-
-    static var transferRepresentation: some TransferRepresentation {
-        CodableRepresentation(contentType: .jointTodoProject)
-    }
-}
-
-private struct ListDragPayload: Codable, Transferable {
-    let projectID: UUID
-    let listID: UUID
-
-    static var transferRepresentation: some TransferRepresentation {
-        CodableRepresentation(contentType: .jointTodoList)
-    }
-}
-
-private struct TaskDragPayload: Codable, Transferable {
-    let listID: UUID
-    let itemID: UUID
-
-    static var transferRepresentation: some TransferRepresentation {
-        CodableRepresentation(contentType: .jointTodoTask)
-    }
-}
 
 struct ContentView: View {
     @EnvironmentObject private var store: AppStore
     @State private var selectedProjectIDs: Set<UUID> = []
     @State private var projectRowFrames: [UUID: CGRect] = [:]
+    @State private var listRowFrames: [UUID: CGRect] = [:]
+    @State private var taskRowFrames: [UUID: CGRect] = [:]
     @State private var dragAnchorProjectID: UUID?
+    @State private var projectReorderTargetID: UUID?
+    @State private var listReorderTargetID: UUID?
+    @State private var taskReorderTargetID: UUID?
     @FocusState private var projectPaneFocused: Bool
     private let refreshTimer = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
 
@@ -78,9 +49,12 @@ struct ContentView: View {
                     ProjectSidebarRow(
                         project: project,
                         isSelected: selectedProjectIDs.contains(project.id),
+                        isReorderTarget: projectReorderTargetID == project.id,
                         onRename: { store.renameProject(project.id, to: $0) },
                         onSelectionDragChanged: updateProjectDragSelection,
-                        onSelectionDragEnded: finishProjectDragSelection
+                        onSelectionDragEnded: finishProjectDragSelection,
+                        onReorderDragChanged: { updateProjectReorder(project.id, location: $0) },
+                        onReorderDragEnded: { finishProjectReorder(project.id, location: $0) }
                     )
                     .background {
                         GeometryReader { geometry in
@@ -142,8 +116,21 @@ struct ContentView: View {
             List(selection: $store.selectedListID) {
                 Section(project.name) {
                     ForEach(project.lists) { list in
-                        TodoListSidebarRow(list: list, projectID: project.id)
+                        TodoListSidebarRow(
+                            list: list,
+                            isReorderTarget: listReorderTargetID == list.id,
+                            onReorderDragChanged: { updateListReorder(list.id, location: $0) },
+                            onReorderDragEnded: { finishListReorder(list.id, location: $0) }
+                        )
                         .tag(list.id)
+                        .background {
+                            GeometryReader { geometry in
+                                Color.clear.preference(
+                                    key: ListRowFramePreferenceKey.self,
+                                    value: [list.id: geometry.frame(in: .named("list-list"))]
+                                )
+                            }
+                        }
                         .contextMenu {
                             Button("Delete List", role: .destructive) { store.deleteList(list.id) }
                         }
@@ -155,6 +142,8 @@ struct ContentView: View {
                     )
                 }
             }
+            .coordinateSpace(name: "list-list")
+            .onPreferenceChange(ListRowFramePreferenceKey.self) { listRowFrames = $0 }
             .navigationTitle("Lists")
             .toolbar {
                 ToolbarItem {
@@ -200,11 +189,20 @@ struct ContentView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 6) {
                             ForEach(list.children(of: nil)) { item in
-                                TaskRow(list: list, item: item, depth: 0)
+                                TaskRow(
+                                    list: list,
+                                    item: item,
+                                    depth: 0,
+                                    reorderTargetID: taskReorderTargetID,
+                                    onReorderDragChanged: { updateTaskReorder($0, location: $1) },
+                                    onReorderDragEnded: { finishTaskReorder(in: list, itemID: $0, location: $1) }
+                                )
                             }
                         }
                         .padding(20)
                     }
+                    .coordinateSpace(name: "task-list")
+                    .onPreferenceChange(TaskRowFramePreferenceKey.self) { taskRowFrames = $0 }
                 }
             }
             .toolbar {
@@ -323,7 +321,69 @@ struct ContentView: View {
     }
 
     private func projectNearest(to point: CGPoint) -> UUID? {
-        projectRowFrames.min { lhs, rhs in
+        nearestRow(in: projectRowFrames, to: point)
+    }
+
+    private func updateProjectReorder(_ sourceID: UUID, location: CGPoint) {
+        let targetID = nearestRow(in: projectRowFrames, to: location)
+        projectReorderTargetID = targetID == sourceID ? nil : targetID
+    }
+
+    private func finishProjectReorder(_ sourceID: UUID, location: CGPoint) {
+        defer { projectReorderTargetID = nil }
+        guard let targetID = nearestRow(in: projectRowFrames, to: location),
+              targetID != sourceID,
+              let targetFrame = projectRowFrames[targetID] else { return }
+        store.moveProject(
+            sourceID,
+            relativeTo: targetID,
+            placement: location.y < targetFrame.midY ? .before : .after
+        )
+    }
+
+    private func updateListReorder(_ sourceID: UUID, location: CGPoint) {
+        let targetID = nearestRow(in: listRowFrames, to: location)
+        listReorderTargetID = targetID == sourceID ? nil : targetID
+    }
+
+    private func finishListReorder(_ sourceID: UUID, location: CGPoint) {
+        defer { listReorderTargetID = nil }
+        guard let targetID = nearestRow(in: listRowFrames, to: location),
+              targetID != sourceID,
+              let targetFrame = listRowFrames[targetID] else { return }
+        store.moveList(
+            sourceID,
+            relativeTo: targetID,
+            placement: location.y < targetFrame.midY ? .before : .after
+        )
+    }
+
+    private func updateTaskReorder(_ sourceID: UUID, location: CGPoint) {
+        let targetID = nearestRow(in: taskRowFrames, to: location)
+        taskReorderTargetID = targetID == sourceID ? nil : targetID
+    }
+
+    private func finishTaskReorder(in list: TodoList, itemID: UUID, location: CGPoint) {
+        defer { taskReorderTargetID = nil }
+        guard let targetID = nearestRow(in: taskRowFrames, to: location),
+              targetID != itemID,
+              let targetFrame = taskRowFrames[targetID] else { return }
+
+        let relativeY = location.y - targetFrame.minY
+        let placement: TaskDropPlacement
+        if relativeY < targetFrame.height / 3 {
+            placement = .before
+        } else if relativeY > targetFrame.height * 2 / 3 {
+            placement = .after
+        } else {
+            placement = .inside
+        }
+
+        store.moveItem(in: list.id, itemID: itemID, relativeTo: targetID, placement: placement)
+    }
+
+    private func nearestRow(in frames: [UUID: CGRect], to point: CGPoint) -> UUID? {
+        frames.min { lhs, rhs in
             abs(lhs.value.midY - point.y) < abs(rhs.value.midY - point.y)
         }?.key
     }
@@ -337,19 +397,40 @@ private struct ProjectRowFramePreferenceKey: PreferenceKey {
     }
 }
 
+private struct ListRowFramePreferenceKey: PreferenceKey {
+    static let defaultValue: [UUID: CGRect] = [:]
+
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+private struct TaskRowFramePreferenceKey: PreferenceKey {
+    static let defaultValue: [UUID: CGRect] = [:]
+
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
 private struct ProjectSidebarRow: View {
-    @EnvironmentObject private var store: AppStore
     let project: Project
     let isSelected: Bool
+    let isReorderTarget: Bool
     let onRename: (String) -> Void
     let onSelectionDragChanged: (DragGesture.Value) -> Void
     let onSelectionDragEnded: (DragGesture.Value) -> Void
-    @State private var isDropTarget = false
+    let onReorderDragChanged: (CGPoint) -> Void
+    let onReorderDragEnded: (CGPoint) -> Void
 
     var body: some View {
         HStack(spacing: 7) {
             ReorderHandle(help: "Drag to reorder this project")
-                .draggable(ProjectDragPayload(projectID: project.id))
+                .gesture(
+                    DragGesture(minimumDistance: 3, coordinateSpace: .named("project-list"))
+                        .onChanged { onReorderDragChanged($0.location) }
+                        .onEnded { onReorderDragEnded($0.location) }
+                )
             HStack(spacing: 0) {
                 EditableLabel(text: project.name, systemImage: "folder", onChange: onRename)
                 Spacer(minLength: 0)
@@ -370,32 +451,28 @@ private struct ProjectSidebarRow: View {
                 in: RoundedRectangle(cornerRadius: 6)
             )
             .overlay {
-                if isDropTarget {
+                if isReorderTarget {
                     RoundedRectangle(cornerRadius: 6).stroke(Color.accentColor, lineWidth: 2)
                 }
             }
-            .dropDestination(for: ProjectDragPayload.self) { payloads, location in
-                guard let sourceID = payloads.first?.projectID, sourceID != project.id else { return false }
-                store.moveProject(
-                    sourceID,
-                    relativeTo: project.id,
-                    placement: location.y < 16 ? .before : .after
-                )
-                return true
-            } isTargeted: { isDropTarget = $0 }
     }
 }
 
 private struct TodoListSidebarRow: View {
     @EnvironmentObject private var store: AppStore
     let list: TodoList
-    let projectID: UUID
-    @State private var isDropTarget = false
+    let isReorderTarget: Bool
+    let onReorderDragChanged: (CGPoint) -> Void
+    let onReorderDragEnded: (CGPoint) -> Void
 
     var body: some View {
         HStack(spacing: 8) {
             ReorderHandle(help: "Drag to reorder this list")
-                .draggable(ListDragPayload(projectID: projectID, listID: list.id))
+                .gesture(
+                    DragGesture(minimumDistance: 3, coordinateSpace: .named("list-list"))
+                        .onChanged { onReorderDragChanged($0.location) }
+                        .onEnded { onReorderDragEnded($0.location) }
+                )
             CompletionButton(isCompleted: list.isCompleted) {
                 store.setListCompletion(list.id, completed: !list.isCompleted)
             }
@@ -409,21 +486,10 @@ private struct TodoListSidebarRow: View {
         }
         .contentShape(Rectangle())
         .overlay {
-            if isDropTarget {
+            if isReorderTarget {
                 RoundedRectangle(cornerRadius: 5).stroke(Color.accentColor, lineWidth: 2)
             }
         }
-        .dropDestination(for: ListDragPayload.self) { payloads, location in
-            guard let payload = payloads.first,
-                  payload.projectID == projectID,
-                  payload.listID != list.id else { return false }
-            store.moveList(
-                payload.listID,
-                relativeTo: list.id,
-                placement: location.y < 18 ? .before : .after
-            )
-            return true
-        } isTargeted: { isDropTarget = $0 }
     }
 }
 
@@ -469,8 +535,10 @@ private struct TaskRow: View {
     let list: TodoList
     let item: TaskItem
     let depth: Int
+    let reorderTargetID: UUID?
+    let onReorderDragChanged: (UUID, CGPoint) -> Void
+    let onReorderDragEnded: (UUID, CGPoint) -> Void
     @State private var isExpanded = true
-    @State private var isDropTarget = false
 
     private var children: [TaskItem] { list.children(of: item.id) }
 
@@ -496,7 +564,11 @@ private struct TaskRow: View {
                     .floatingHelp(isExpanded ? "Collapse sub-items" : "Expand sub-items")
                 }
                 ReorderHandle(help: "Drag to reorder; drop in the center of another task to nest it")
-                    .draggable(TaskDragPayload(listID: list.id, itemID: item.id))
+                    .gesture(
+                        DragGesture(minimumDistance: 3, coordinateSpace: .named("task-list"))
+                            .onChanged { onReorderDragChanged(item.id, $0.location) }
+                            .onEnded { onReorderDragEnded(item.id, $0.location) }
+                    )
                 CompletionButton(isCompleted: item.isCompleted) {
                     store.setItemCompletion(in: list.id, itemID: item.id, completed: !item.isCompleted)
                 }
@@ -530,39 +602,34 @@ private struct TaskRow: View {
             .padding(.vertical, 5)
             .padding(.horizontal, 8)
             .background(depth == 0 ? Color.secondary.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 7))
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: TaskRowFramePreferenceKey.self,
+                        value: [item.id: geometry.frame(in: .named("task-list"))]
+                    )
+                }
+            }
             .contentShape(Rectangle())
             .overlay {
-                if isDropTarget {
+                if reorderTargetID == item.id {
                     RoundedRectangle(cornerRadius: 7).stroke(Color.accentColor, lineWidth: 2)
                 }
             }
-            .dropDestination(for: TaskDragPayload.self) { payloads, location in
-                guard let payload = payloads.first,
-                      payload.listID == list.id,
-                      payload.itemID != item.id else { return false }
-                let placement = dropPlacement(at: location)
-                if placement == .inside { isExpanded = true }
-                store.moveItem(
-                    in: list.id,
-                    itemID: payload.itemID,
-                    relativeTo: item.id,
-                    placement: placement
-                )
-                return true
-            } isTargeted: { isDropTarget = $0 }
 
             if isExpanded {
                 ForEach(children) { child in
-                    TaskRow(list: list, item: child, depth: depth + 1)
+                    TaskRow(
+                        list: list,
+                        item: child,
+                        depth: depth + 1,
+                        reorderTargetID: reorderTargetID,
+                        onReorderDragChanged: onReorderDragChanged,
+                        onReorderDragEnded: onReorderDragEnded
+                    )
                 }
             }
         }
-    }
-
-    private func dropPlacement(at location: CGPoint) -> TaskDropPlacement {
-        if location.y < 14 { return .before }
-        if location.y > 32 { return .after }
-        return .inside
     }
 }
 
