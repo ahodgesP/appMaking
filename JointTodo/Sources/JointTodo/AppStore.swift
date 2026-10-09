@@ -2,6 +2,17 @@ import Foundation
 import Combine
 import JointTodoCore
 
+enum LinearDropPlacement: Equatable {
+    case before
+    case after
+}
+
+enum TaskDropPlacement: Equatable {
+    case before
+    case inside
+    case after
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     @Published var library: TodoLibrary
@@ -53,6 +64,18 @@ final class AppStore: ObservableObject {
         commit()
     }
 
+    func moveProject(_ id: UUID, relativeTo targetID: UUID, placement: LinearDropPlacement) {
+        guard id != targetID,
+              let sourceIndex = library.projects.firstIndex(where: { $0.id == id }) else { return }
+        let project = library.projects.remove(at: sourceIndex)
+        guard let targetIndex = library.projects.firstIndex(where: { $0.id == targetID }) else {
+            library.projects.insert(project, at: min(sourceIndex, library.projects.count))
+            return
+        }
+        library.projects.insert(project, at: targetIndex + (placement == .after ? 1 : 0))
+        commit()
+    }
+
     func deleteProject(_ id: UUID) {
         deleteProjects([id])
     }
@@ -79,6 +102,17 @@ final class AppStore: ObservableObject {
 
     func renameList(_ id: UUID, to title: String) {
         mutateList(id) { $0.title = title }
+    }
+
+    func moveList(_ id: UUID, relativeTo targetID: UUID, placement: LinearDropPlacement) {
+        guard id != targetID, let projectIndex else { return }
+        var lists = library.projects[projectIndex].lists
+        guard let sourceIndex = lists.firstIndex(where: { $0.id == id }) else { return }
+        let list = lists.remove(at: sourceIndex)
+        guard let targetIndex = lists.firstIndex(where: { $0.id == targetID }) else { return }
+        lists.insert(list, at: targetIndex + (placement == .after ? 1 : 0))
+        library.projects[projectIndex].lists = lists
+        commit()
     }
 
     func deleteList(_ id: UUID) {
@@ -117,6 +151,41 @@ final class AppStore: ObservableObject {
 
     func deleteItem(in listID: UUID, itemID: UUID) {
         mutateList(listID) { $0.deleteItem(itemID) }
+    }
+
+    func moveItem(
+        in listID: UUID,
+        itemID: UUID,
+        relativeTo targetID: UUID,
+        placement: TaskDropPlacement
+    ) {
+        guard itemID != targetID,
+              let projectIndex,
+              let listIndex = library.projects[projectIndex].lists.firstIndex(where: { $0.id == listID }) else { return }
+
+        do {
+            var list = library.projects[projectIndex].lists[listIndex]
+            guard let target = list.items.first(where: { $0.id == targetID }) else { return }
+            let parentID: UUID?
+            let destinationIndex: Int
+
+            switch placement {
+            case .inside:
+                parentID = target.id
+                destinationIndex = list.children(of: target.id).filter { $0.id != itemID }.count
+            case .before, .after:
+                parentID = target.parentID
+                let siblings = list.children(of: target.parentID).filter { $0.id != itemID }
+                guard let targetIndex = siblings.firstIndex(where: { $0.id == targetID }) else { return }
+                destinationIndex = targetIndex + (placement == .after ? 1 : 0)
+            }
+
+            try list.moveItem(itemID, toParent: parentID, at: destinationIndex)
+            library.projects[projectIndex].lists[listIndex] = list
+            commit()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     func reload() {

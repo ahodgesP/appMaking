@@ -1,7 +1,7 @@
 import Foundation
 import JointTodoCore
 
-private let cliVersion = "0.2"
+private let cliVersion = "0.4.0"
 
 private func usage() -> Never {
     print("""
@@ -14,10 +14,12 @@ private func usage() -> Never {
       jointodo [--data-file <path>] project-add <name>
       jointodo [--data-file <path>] project-rename <project-name-or-id> <new-name>
       jointodo [--data-file <path>] project-delete <project-name-or-id> [project-name-or-id ...]
+      jointodo [--data-file <path>] project-move <project-name-or-id> <position>
 
       jointodo [--data-file <path>] list-add <project-name-or-id> <title>
       jointodo [--data-file <path>] list-rename <list-name-or-id> <new-title>
       jointodo [--data-file <path>] list-delete <list-name-or-id> [list-name-or-id ...]
+      jointodo [--data-file <path>] list-move <list-name-or-id> <position>
       jointodo [--data-file <path>] list-complete <list-name-or-id>
       jointodo [--data-file <path>] list-uncomplete <list-name-or-id>
       jointodo [--data-file <path>] list-timestamp <list-name-or-id> <date|datetime|timezone>
@@ -25,6 +27,7 @@ private func usage() -> Never {
       jointodo [--data-file <path>] item-add <list-name-or-id> <title> [--parent <item-name-or-id>]
       jointodo [--data-file <path>] item-rename <list-name-or-id> <item-name-or-id> <new-title>
       jointodo [--data-file <path>] item-delete <list-name-or-id> <item-name-or-id> [item-name-or-id ...]
+      jointodo [--data-file <path>] item-move <list-name-or-id> <item-name-or-id> <position> [--parent <item-name-or-id|root>]
       jointodo [--data-file <path>] item-complete <list-name-or-id> <item-name-or-id>
       jointodo [--data-file <path>] item-uncomplete <list-name-or-id> <item-name-or-id>
 
@@ -175,6 +178,22 @@ func printJSON(_ value: some Encodable) {
     }
 }
 
+func requirePosition(_ value: String, maximum: Int) -> Int {
+    guard let position = Int(value), position >= 1, position <= maximum else {
+        fail("Position must be between 1 and \(maximum): \(value)")
+    }
+    return position
+}
+
+func printItems(in list: TodoList, parentID: UUID? = nil, depth: Int = 0) {
+    for item in list.children(of: parentID) {
+        let indent = String(repeating: "  ", count: depth + 2)
+        let branch = depth == 0 ? "" : "↳ "
+        print("\(indent)\(branch)\(item.isCompleted ? "✓" : "○") \(item.title) [\(item.id.uuidString)]")
+        printItems(in: list, parentID: item.id, depth: depth + 1)
+    }
+}
+
 switch command {
 case "path":
     guard arguments.count == 1 else { usage() }
@@ -190,10 +209,7 @@ case "show":
         print("\(project.name) [\(project.id.uuidString)]")
         for list in project.lists {
             print("  \(list.isCompleted ? "✓" : "○") \(list.title) [\(list.id.uuidString)]")
-            for item in list.items.sorted(by: { $0.position < $1.position }) {
-                let indent = item.parentID == nil ? "    " : "      ↳ "
-                print("\(indent)\(item.isCompleted ? "✓" : "○") \(item.title) [\(item.id.uuidString)]")
-            }
+            printItems(in: list)
         }
     }
 
@@ -227,6 +243,15 @@ case "project-delete":
     for project in deleted {
         print("deleted\tproject\t\(project.id.uuidString)\t\(project.name)")
     }
+
+case "project-move":
+    guard arguments.count == 3 else { usage() }
+    let sourceIndex = requireProject(arguments[1])
+    let destination = requirePosition(arguments[2], maximum: library.projects.count) - 1
+    let project = library.projects.remove(at: sourceIndex)
+    library.projects.insert(project, at: destination)
+    save()
+    print("moved\tproject\t\(project.id.uuidString)\tposition=\(destination + 1)")
 
 case "list-add":
     guard arguments.count >= 3 else { usage() }
@@ -264,6 +289,16 @@ case "list-delete":
     for list in deleted {
         print("deleted\tlist\t\(list.id.uuidString)\t\(list.title)")
     }
+
+case "list-move":
+    guard arguments.count == 3 else { usage() }
+    let location = requireList(arguments[1])
+    let maximum = library.projects[location.0].lists.count
+    let destination = requirePosition(arguments[2], maximum: maximum) - 1
+    let list = library.projects[location.0].lists.remove(at: location.1)
+    library.projects[location.0].lists.insert(list, at: destination)
+    save()
+    print("moved\tlist\t\(list.id.uuidString)\tposition=\(destination + 1)")
 
 case "list-complete", "list-uncomplete":
     guard arguments.count == 2 else { usage() }
@@ -339,6 +374,35 @@ case "item-delete":
     for (id, title) in deleted {
         print("deleted\titem\t\(id.uuidString)\t\(title)")
     }
+
+case "item-move":
+    guard arguments.count == 4 || arguments.count == 6 else { usage() }
+    let location = requireList(arguments[1])
+    let currentList = library.projects[location.0].lists[location.1]
+    let itemID = requireItem(arguments[2], in: currentList)
+    let currentItem = currentList.items.first(where: { $0.id == itemID })!
+    var parentID = currentItem.parentID
+
+    if arguments.count == 6 {
+        guard arguments[4] == "--parent" else { usage() }
+        parentID = arguments[5].lowercased() == "root"
+            ? nil
+            : requireItem(arguments[5], in: currentList)
+    }
+
+    let siblingCount = currentList.children(of: parentID).filter { $0.id != itemID }.count
+    let destination = requirePosition(arguments[3], maximum: siblingCount + 1) - 1
+    do {
+        try library.projects[location.0].lists[location.1].moveItem(
+            itemID,
+            toParent: parentID,
+            at: destination
+        )
+    } catch {
+        fail("Could not move item: \(error.localizedDescription)")
+    }
+    save()
+    print("moved\titem\t\(itemID.uuidString)\tposition=\(destination + 1) parent=\(parentID?.uuidString ?? "root")")
 
 case "item-complete", "item-uncomplete", "complete", "uncomplete":
     guard arguments.count == 3 else { usage() }

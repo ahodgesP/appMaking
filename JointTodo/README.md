@@ -7,7 +7,7 @@ and configurable timestamps.
 
 ## Current scope: local agents only
 
-JointTodo 0.3 is intentionally local-only. It has no cloud service, hosted API,
+JointTodo 0.4 is intentionally local-only. It has no cloud service, hosted API,
 browser extension, account system, sync server, MCP server, or public URL.
 
 A local agent such as Codex or another locally running LLM tool can use
@@ -24,6 +24,8 @@ version.
 
 - Projects, lists, tasks, and nested subtasks
 - Collapsible subtask groups at every nesting level
+- Drag-and-drop ordering for projects, lists, tasks, and nested tasks
+- Task promotion and nesting by dropping above, below, or inside another task
 - Native macOS GUI with inline renaming and multi-select project deletion
 - Click-and-drag project range selection
 - Automatic parent/list completion when all children are complete
@@ -82,6 +84,9 @@ selected project, and the right column contains the selected list's tasks.
 - Use the input above the task area to add a task.
 - Use the plus button beside a task to add a subtask.
 - Use the chevron beside a task to collapse or expand its subtasks.
+- Drag the handle beside any project, list, or task to reorder it.
+- Drop a task above or below another task to place it at that task's level; drop
+  it in the center to make it a subtask.
 - Click a completion circle to change status.
 - Command-click, Shift-click, or click-drag to select multiple projects.
 - Press Delete to remove selected projects or the selected list.
@@ -140,8 +145,13 @@ Rename or delete entries:
 
 ```sh
 jointodo project-rename "Home Projects" "House"
+jointodo project-move "House" 1
 jointodo list-rename "Door replacement" "Replace front door"
+jointodo list-move "Replace front door" 1
 jointodo item-rename "Replace front door" "Buy new door" "Order new door"
+jointodo item-move "Replace front door" "Order new door" 1
+jointodo item-move "Replace front door" "Order new door" 2 --parent "Remove old door"
+jointodo item-move "Replace front door" "Order new door" 1 --parent root
 jointodo item-delete "Replace front door" "Order new door"
 jointodo list-delete "Replace front door"
 jointodo project-delete "House"
@@ -177,6 +187,12 @@ The CLI exits nonzero for missing or ambiguous references and writes errors to
 standard error. It saves atomically and maintains completion propagation,
 timestamps, positions, and the library revision. Prefer it over editing the JSON
 file directly.
+
+Move positions are one-based. `project-move` reorders projects, `list-move`
+reorders within the list's current project, and `item-move` reorders within the
+item's current parent unless `--parent` is supplied. Use `--parent root` to
+promote a subtask to the top level. Moves that would create a parent/descendant
+cycle are rejected.
 
 See [AGENTS.md](AGENTS.md) for a concise playbook intended for coding agents.
 

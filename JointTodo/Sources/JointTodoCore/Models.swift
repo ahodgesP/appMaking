@@ -57,6 +57,22 @@ public struct TaskItem: Identifiable, Codable, Hashable, Sendable {
     public var isCompleted: Bool { completedAt != nil }
 }
 
+public enum TaskMoveError: Error, LocalizedError, Equatable, Sendable {
+    case itemNotFound
+    case parentNotFound
+    case cannotMoveIntoSelf
+    case cannotMoveIntoDescendant
+
+    public var errorDescription: String? {
+        switch self {
+        case .itemNotFound: "The task being moved no longer exists."
+        case .parentNotFound: "The destination parent no longer exists."
+        case .cannotMoveIntoSelf: "A task cannot be its own parent."
+        case .cannotMoveIntoDescendant: "A task cannot be moved inside one of its descendants."
+        }
+    }
+}
+
 public struct TodoList: Identifiable, Codable, Hashable, Sendable {
     public var id: UUID
     public var title: String
@@ -122,6 +138,42 @@ public struct TodoList: Identifiable, Codable, Hashable, Sendable {
         refreshCompletion(now: now)
     }
 
+    public mutating func moveItem(
+        _ itemID: UUID,
+        toParent parentID: UUID?,
+        at destinationIndex: Int,
+        now: Date = Date()
+    ) throws {
+        guard let itemIndex = items.firstIndex(where: { $0.id == itemID }) else {
+            throw TaskMoveError.itemNotFound
+        }
+        if parentID == itemID { throw TaskMoveError.cannotMoveIntoSelf }
+        if let parentID, !items.contains(where: { $0.id == parentID }) {
+            throw TaskMoveError.parentNotFound
+        }
+        if let parentID, descendants(of: itemID).contains(parentID) {
+            throw TaskMoveError.cannotMoveIntoDescendant
+        }
+
+        let oldParentID = items[itemIndex].parentID
+        items[itemIndex].parentID = parentID
+
+        var destinationSiblings = children(of: parentID).filter { $0.id != itemID }
+        let insertionIndex = min(max(destinationIndex, 0), destinationSiblings.count)
+        destinationSiblings.insert(items[itemIndex], at: insertionIndex)
+        renumber(destinationSiblings)
+
+        if oldParentID != parentID {
+            renumber(children(of: oldParentID).filter { $0.id != itemID })
+        }
+
+        updateAncestors(startingAt: oldParentID, now: now)
+        if parentID != oldParentID {
+            updateAncestors(startingAt: parentID, now: now)
+        }
+        refreshCompletion(now: now)
+    }
+
     public mutating func refreshCompletion(now: Date = Date()) {
         let roots = children(of: nil)
         completedAt = !roots.isEmpty && roots.allSatisfy(\.isCompleted)
@@ -146,6 +198,14 @@ public struct TodoList: Identifiable, Codable, Hashable, Sendable {
             ? (items[index].completedAt ?? now)
             : nil
         updateAncestors(startingAt: items[index].parentID, now: now)
+    }
+
+    private mutating func renumber(_ siblings: [TaskItem]) {
+        for (position, sibling) in siblings.enumerated() {
+            if let index = items.firstIndex(where: { $0.id == sibling.id }) {
+                items[index].position = position
+            }
+        }
     }
 
     private func descendants(of itemID: UUID) -> Set<UUID> {

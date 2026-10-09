@@ -1,7 +1,41 @@
 import SwiftUI
 import Combine
 import AppKit
+import CoreTransferable
+import UniformTypeIdentifiers
 import JointTodoCore
+
+private extension UTType {
+    static let jointTodoProject = UTType(exportedAs: "local.jointodo.project")
+    static let jointTodoList = UTType(exportedAs: "local.jointodo.list")
+    static let jointTodoTask = UTType(exportedAs: "local.jointodo.task")
+}
+
+private struct ProjectDragPayload: Codable, Transferable {
+    let projectID: UUID
+
+    static var transferRepresentation: some TransferRepresentation {
+        CodableRepresentation(contentType: .jointTodoProject)
+    }
+}
+
+private struct ListDragPayload: Codable, Transferable {
+    let projectID: UUID
+    let listID: UUID
+
+    static var transferRepresentation: some TransferRepresentation {
+        CodableRepresentation(contentType: .jointTodoList)
+    }
+}
+
+private struct TaskDragPayload: Codable, Transferable {
+    let listID: UUID
+    let itemID: UUID
+
+    static var transferRepresentation: some TransferRepresentation {
+        CodableRepresentation(contentType: .jointTodoTask)
+    }
+}
 
 struct ContentView: View {
     @EnvironmentObject private var store: AppStore
@@ -44,7 +78,9 @@ struct ContentView: View {
                     ProjectSidebarRow(
                         project: project,
                         isSelected: selectedProjectIDs.contains(project.id),
-                        onRename: { store.renameProject(project.id, to: $0) }
+                        onRename: { store.renameProject(project.id, to: $0) },
+                        onSelectionDragChanged: updateProjectDragSelection,
+                        onSelectionDragEnded: finishProjectDragSelection
                     )
                     .background {
                         GeometryReader { geometry in
@@ -72,11 +108,6 @@ struct ContentView: View {
             }
             .coordinateSpace(name: "project-list")
             .onPreferenceChange(ProjectRowFramePreferenceKey.self) { projectRowFrames = $0 }
-            .highPriorityGesture(
-                DragGesture(minimumDistance: 4, coordinateSpace: .named("project-list"))
-                    .onChanged(updateProjectDragSelection)
-                    .onEnded(finishProjectDragSelection)
-            )
             .focusable()
             .focused($projectPaneFocused)
             .onDeleteCommand { deleteProjects(selectedProjectIDs) }
@@ -111,7 +142,7 @@ struct ContentView: View {
             List(selection: $store.selectedListID) {
                 Section(project.name) {
                     ForEach(project.lists) { list in
-                        TodoListSidebarRow(list: list)
+                        TodoListSidebarRow(list: list, projectID: project.id)
                         .tag(list.id)
                         .contextMenu {
                             Button("Delete List", role: .destructive) { store.deleteList(list.id) }
@@ -307,12 +338,29 @@ private struct ProjectRowFramePreferenceKey: PreferenceKey {
 }
 
 private struct ProjectSidebarRow: View {
+    @EnvironmentObject private var store: AppStore
     let project: Project
     let isSelected: Bool
     let onRename: (String) -> Void
+    let onSelectionDragChanged: (DragGesture.Value) -> Void
+    let onSelectionDragEnded: (DragGesture.Value) -> Void
+    @State private var isDropTarget = false
 
     var body: some View {
-        EditableLabel(text: project.name, systemImage: "folder", onChange: onRename)
+        HStack(spacing: 7) {
+            ReorderHandle(help: "Drag to reorder this project")
+                .draggable(ProjectDragPayload(projectID: project.id))
+            HStack(spacing: 0) {
+                EditableLabel(text: project.name, systemImage: "folder", onChange: onRename)
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 4, coordinateSpace: .named("project-list"))
+                    .onChanged(onSelectionDragChanged)
+                    .onEnded(onSelectionDragEnded)
+            )
+        }
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -321,15 +369,33 @@ private struct ProjectSidebarRow: View {
                 isSelected ? Color.accentColor.opacity(0.28) : Color.clear,
                 in: RoundedRectangle(cornerRadius: 6)
             )
+            .overlay {
+                if isDropTarget {
+                    RoundedRectangle(cornerRadius: 6).stroke(Color.accentColor, lineWidth: 2)
+                }
+            }
+            .dropDestination(for: ProjectDragPayload.self) { payloads, location in
+                guard let sourceID = payloads.first?.projectID, sourceID != project.id else { return false }
+                store.moveProject(
+                    sourceID,
+                    relativeTo: project.id,
+                    placement: location.y < 16 ? .before : .after
+                )
+                return true
+            } isTargeted: { isDropTarget = $0 }
     }
 }
 
 private struct TodoListSidebarRow: View {
     @EnvironmentObject private var store: AppStore
     let list: TodoList
+    let projectID: UUID
+    @State private var isDropTarget = false
 
     var body: some View {
         HStack(spacing: 8) {
+            ReorderHandle(help: "Drag to reorder this list")
+                .draggable(ListDragPayload(projectID: projectID, listID: list.id))
             CompletionButton(isCompleted: list.isCompleted) {
                 store.setListCompletion(list.id, completed: !list.isCompleted)
             }
@@ -341,6 +407,23 @@ private struct TodoListSidebarRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+        .contentShape(Rectangle())
+        .overlay {
+            if isDropTarget {
+                RoundedRectangle(cornerRadius: 5).stroke(Color.accentColor, lineWidth: 2)
+            }
+        }
+        .dropDestination(for: ListDragPayload.self) { payloads, location in
+            guard let payload = payloads.first,
+                  payload.projectID == projectID,
+                  payload.listID != list.id else { return false }
+            store.moveList(
+                payload.listID,
+                relativeTo: list.id,
+                placement: location.y < 18 ? .before : .after
+            )
+            return true
+        } isTargeted: { isDropTarget = $0 }
     }
 }
 
@@ -387,6 +470,7 @@ private struct TaskRow: View {
     let item: TaskItem
     let depth: Int
     @State private var isExpanded = true
+    @State private var isDropTarget = false
 
     private var children: [TaskItem] { list.children(of: item.id) }
 
@@ -411,6 +495,8 @@ private struct TaskRow: View {
                     .accessibilityLabel(isExpanded ? "Collapse sub-items" : "Expand sub-items")
                     .floatingHelp(isExpanded ? "Collapse sub-items" : "Expand sub-items")
                 }
+                ReorderHandle(help: "Drag to reorder; drop in the center of another task to nest it")
+                    .draggable(TaskDragPayload(listID: list.id, itemID: item.id))
                 CompletionButton(isCompleted: item.isCompleted) {
                     store.setItemCompletion(in: list.id, itemID: item.id, completed: !item.isCompleted)
                 }
@@ -444,6 +530,26 @@ private struct TaskRow: View {
             .padding(.vertical, 5)
             .padding(.horizontal, 8)
             .background(depth == 0 ? Color.secondary.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 7))
+            .contentShape(Rectangle())
+            .overlay {
+                if isDropTarget {
+                    RoundedRectangle(cornerRadius: 7).stroke(Color.accentColor, lineWidth: 2)
+                }
+            }
+            .dropDestination(for: TaskDragPayload.self) { payloads, location in
+                guard let payload = payloads.first,
+                      payload.listID == list.id,
+                      payload.itemID != item.id else { return false }
+                let placement = dropPlacement(at: location)
+                if placement == .inside { isExpanded = true }
+                store.moveItem(
+                    in: list.id,
+                    itemID: payload.itemID,
+                    relativeTo: item.id,
+                    placement: placement
+                )
+                return true
+            } isTargeted: { isDropTarget = $0 }
 
             if isExpanded {
                 ForEach(children) { child in
@@ -451,6 +557,26 @@ private struct TaskRow: View {
                 }
             }
         }
+    }
+
+    private func dropPlacement(at location: CGPoint) -> TaskDropPlacement {
+        if location.y < 14 { return .before }
+        if location.y > 32 { return .after }
+        return .inside
+    }
+}
+
+private struct ReorderHandle: View {
+    let help: String
+
+    var body: some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+            .frame(width: 14, height: 20)
+            .contentShape(Rectangle())
+            .accessibilityLabel(help)
+            .floatingHelp(help)
     }
 }
 

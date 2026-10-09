@@ -48,10 +48,12 @@ jointodo show [--json]
 jointodo project-add <name>
 jointodo project-rename <project-ref> <new-name>
 jointodo project-delete <project-ref> [project-ref ...]
+jointodo project-move <project-ref> <position>
 
 jointodo list-add <project-ref> <title>
 jointodo list-rename <list-ref> <new-title>
 jointodo list-delete <list-ref> [list-ref ...]
+jointodo list-move <list-ref> <position>
 jointodo list-complete <list-ref>
 jointodo list-uncomplete <list-ref>
 jointodo list-timestamp <list-ref> <date|datetime|timezone>
@@ -59,6 +61,7 @@ jointodo list-timestamp <list-ref> <date|datetime|timezone>
 jointodo item-add <list-ref> <title> [--parent <item-ref>]
 jointodo item-rename <list-ref> <item-ref> <new-title>
 jointodo item-delete <list-ref> <item-ref> [item-ref ...]
+jointodo item-move <list-ref> <item-ref> <position> [--parent <item-ref|root>]
 jointodo item-complete <list-ref> <item-ref>
 jointodo item-uncomplete <list-ref> <item-ref>
 ```
@@ -74,6 +77,10 @@ jointodo --data-file /absolute/path/to/library.json <command>
 
 `JOINTODO_DATA_FILE` is also supported, but `--data-file` is clearer for an
 agent and takes precedence.
+
+Move positions are one-based. An item stays under its current parent unless
+`--parent` is provided. Use `--parent root` to promote it to the top level.
+Cycle-producing moves fail without changing the library.
 
 ## Example agent session
 
