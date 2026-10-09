@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var projectReorderTargetID: UUID?
     @State private var listReorderTargetID: UUID?
     @State private var taskReorderTargetID: UUID?
+    @State private var taskReorderPlacement: TaskDropPlacement?
     @FocusState private var projectPaneFocused: Bool
     private let refreshTimer = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
 
@@ -194,8 +195,9 @@ struct ContentView: View {
                                     item: item,
                                     depth: 0,
                                     reorderTargetID: taskReorderTargetID,
-                                    onReorderDragChanged: { updateTaskReorder($0, location: $1) },
-                                    onReorderDragEnded: { finishTaskReorder(in: list, itemID: $0, location: $1) }
+                                    reorderPlacement: taskReorderPlacement,
+                                    onReorderDragChanged: { updateTaskReorder(in: list, itemID: $0, value: $1) },
+                                    onReorderDragEnded: { finishTaskReorder(in: list, itemID: $0, value: $1) }
                                 )
                             }
                         }
@@ -358,28 +360,41 @@ struct ContentView: View {
         )
     }
 
-    private func updateTaskReorder(_ sourceID: UUID, location: CGPoint) {
-        let targetID = nearestRow(in: taskRowFrames, to: location)
-        taskReorderTargetID = targetID == sourceID ? nil : targetID
+    private func updateTaskReorder(in list: TodoList, itemID: UUID, value: DragGesture.Value) {
+        let targetID = nearestRow(in: taskRowFrames, to: value.location)
+        guard let targetID, targetID != itemID, let targetFrame = taskRowFrames[targetID] else {
+            taskReorderTargetID = nil
+            taskReorderPlacement = nil
+            return
+        }
+        taskReorderTargetID = targetID
+        taskReorderPlacement = taskPlacement(in: list, targetID: targetID, targetFrame: targetFrame, value: value)
     }
 
-    private func finishTaskReorder(in list: TodoList, itemID: UUID, location: CGPoint) {
-        defer { taskReorderTargetID = nil }
-        guard let targetID = nearestRow(in: taskRowFrames, to: location),
+    private func finishTaskReorder(in list: TodoList, itemID: UUID, value: DragGesture.Value) {
+        defer {
+            taskReorderTargetID = nil
+            taskReorderPlacement = nil
+        }
+        guard let targetID = nearestRow(in: taskRowFrames, to: value.location),
               targetID != itemID,
               let targetFrame = taskRowFrames[targetID] else { return }
-
-        let relativeY = location.y - targetFrame.minY
-        let placement: TaskDropPlacement
-        if relativeY < targetFrame.height / 3 {
-            placement = .before
-        } else if relativeY > targetFrame.height * 2 / 3 {
-            placement = .after
-        } else {
-            placement = .inside
-        }
-
+        let placement = taskPlacement(in: list, targetID: targetID, targetFrame: targetFrame, value: value)
         store.moveItem(in: list.id, itemID: itemID, relativeTo: targetID, placement: placement)
+    }
+
+    private func taskPlacement(
+        in list: TodoList,
+        targetID: UUID,
+        targetFrame: CGRect,
+        value: DragGesture.Value
+    ) -> TaskDropPlacement {
+        if value.translation.width > 24 { return .inside }
+        if value.translation.width < -24,
+           list.items.first(where: { $0.id == targetID })?.parentID != nil {
+            return .outside
+        }
+        return value.location.y < targetFrame.midY ? .before : .after
     }
 
     private func nearestRow(in frames: [UUID: CGRect], to point: CGPoint) -> UUID? {
@@ -536,8 +551,9 @@ private struct TaskRow: View {
     let item: TaskItem
     let depth: Int
     let reorderTargetID: UUID?
-    let onReorderDragChanged: (UUID, CGPoint) -> Void
-    let onReorderDragEnded: (UUID, CGPoint) -> Void
+    let reorderPlacement: TaskDropPlacement?
+    let onReorderDragChanged: (UUID, DragGesture.Value) -> Void
+    let onReorderDragEnded: (UUID, DragGesture.Value) -> Void
     @State private var isExpanded = true
 
     private var children: [TaskItem] { list.children(of: item.id) }
@@ -563,11 +579,11 @@ private struct TaskRow: View {
                     .accessibilityLabel(isExpanded ? "Collapse sub-items" : "Expand sub-items")
                     .floatingHelp(isExpanded ? "Collapse sub-items" : "Expand sub-items")
                 }
-                ReorderHandle(help: "Drag to reorder; drop in the center of another task to nest it")
+                ReorderHandle(help: "Drag vertically to reorder, right to nest, or left to promote")
                     .gesture(
                         DragGesture(minimumDistance: 3, coordinateSpace: .named("task-list"))
-                            .onChanged { onReorderDragChanged(item.id, $0.location) }
-                            .onEnded { onReorderDragEnded(item.id, $0.location) }
+                            .onChanged { onReorderDragChanged(item.id, $0) }
+                            .onEnded { onReorderDragEnded(item.id, $0) }
                     )
                 CompletionButton(isCompleted: item.isCompleted) {
                     store.setItemCompletion(in: list.id, itemID: item.id, completed: !item.isCompleted)
@@ -613,7 +629,7 @@ private struct TaskRow: View {
             .contentShape(Rectangle())
             .overlay {
                 if reorderTargetID == item.id {
-                    RoundedRectangle(cornerRadius: 7).stroke(Color.accentColor, lineWidth: 2)
+                    TaskDropIndicator(placement: reorderPlacement ?? .after)
                 }
             }
 
@@ -624,10 +640,42 @@ private struct TaskRow: View {
                         item: child,
                         depth: depth + 1,
                         reorderTargetID: reorderTargetID,
+                        reorderPlacement: reorderPlacement,
                         onReorderDragChanged: onReorderDragChanged,
                         onReorderDragEnded: onReorderDragEnded
                     )
                 }
+            }
+        }
+    }
+}
+
+private struct TaskDropIndicator: View {
+    let placement: TaskDropPlacement
+
+    var body: some View {
+        switch placement {
+        case .inside:
+            RoundedRectangle(cornerRadius: 7)
+                .stroke(Color.accentColor, lineWidth: 2)
+        case .before:
+            VStack(spacing: 0) {
+                Rectangle().fill(Color.accentColor).frame(height: 3)
+                Spacer(minLength: 0)
+            }
+        case .after:
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                Rectangle().fill(Color.accentColor).frame(height: 3)
+            }
+        case .outside:
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.left")
+                    Rectangle().fill(Color.accentColor).frame(height: 3)
+                }
+                .foregroundStyle(Color.accentColor)
             }
         }
     }

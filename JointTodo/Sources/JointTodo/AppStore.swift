@@ -11,6 +11,7 @@ enum TaskDropPlacement: Equatable {
     case before
     case inside
     case after
+    case outside
 }
 
 @MainActor
@@ -19,17 +20,26 @@ final class AppStore: ObservableObject {
     @Published var selectedProjectID: UUID?
     @Published var selectedListID: UUID?
     @Published var errorMessage: String?
+    @Published private(set) var canUndo = false
+    @Published private(set) var canRedo = false
 
     let dataURL: URL
+    private var persistedLibrary: TodoLibrary
+    private var undoStack: [TodoLibrary] = []
+    private var redoStack: [TodoLibrary] = []
+    private let historyLimit = 100
 
     init(dataURL: URL = JointTodoPaths.defaultDataFile()) {
         self.dataURL = dataURL
+        let initialLibrary: TodoLibrary
         do {
-            library = try TodoPersistence.load(from: dataURL)
+            initialLibrary = try TodoPersistence.load(from: dataURL)
         } catch {
-            library = .starter
+            initialLibrary = .starter
             errorMessage = "Could not read the library: \(error.localizedDescription)"
         }
+        library = initialLibrary
+        persistedLibrary = initialLibrary
         selectedProjectID = library.projects.first?.id
         selectedListID = library.projects.first?.lists.first?.id
         save()
@@ -178,6 +188,18 @@ final class AppStore: ObservableObject {
                 let siblings = list.children(of: target.parentID).filter { $0.id != itemID }
                 guard let targetIndex = siblings.firstIndex(where: { $0.id == targetID }) else { return }
                 destinationIndex = targetIndex + (placement == .after ? 1 : 0)
+            case .outside:
+                guard let targetParentID = target.parentID,
+                      let targetParent = list.items.first(where: { $0.id == targetParentID }) else {
+                    parentID = nil
+                    let siblings = list.children(of: nil).filter { $0.id != itemID }
+                    destinationIndex = siblings.firstIndex(where: { $0.id == targetID }) ?? siblings.count
+                    break
+                }
+                parentID = targetParent.parentID
+                let siblings = list.children(of: targetParent.parentID).filter { $0.id != itemID }
+                guard let parentIndex = siblings.firstIndex(where: { $0.id == targetParentID }) else { return }
+                destinationIndex = parentIndex + 1
             }
 
             try list.moveItem(itemID, toParent: parentID, at: destinationIndex)
@@ -191,6 +213,7 @@ final class AppStore: ObservableObject {
     func reload() {
         do {
             library = try TodoPersistence.load(from: dataURL)
+            acceptExternalLibrary()
         } catch {
             errorMessage = "Could not reload the library: \(error.localizedDescription)"
         }
@@ -201,6 +224,7 @@ final class AppStore: ObservableObject {
             let diskLibrary = try TodoPersistence.load(from: dataURL)
             guard diskLibrary.revision != library.revision else { return }
             library = diskLibrary
+            acceptExternalLibrary()
             if !library.projects.contains(where: { $0.id == selectedProjectID }) {
                 selectedProjectID = library.projects.first?.id
             }
@@ -210,6 +234,38 @@ final class AppStore: ObservableObject {
         } catch {
             errorMessage = "Could not reload agent changes: \(error.localizedDescription)"
         }
+    }
+
+    func undo() {
+        guard let previous = undoStack.popLast() else { return }
+        let current = library
+        library = revisionBumped(previous, after: current)
+        guard saveReportingFailure() else {
+            library = current
+            undoStack.append(previous)
+            updateHistoryAvailability()
+            return
+        }
+        redoStack.append(current)
+        persistedLibrary = library
+        updateHistoryAvailability()
+        normalizeSelection()
+    }
+
+    func redo() {
+        guard let next = redoStack.popLast() else { return }
+        let current = library
+        library = revisionBumped(next, after: current)
+        guard saveReportingFailure() else {
+            library = current
+            redoStack.append(next)
+            updateHistoryAvailability()
+            return
+        }
+        undoStack.append(current)
+        persistedLibrary = library
+        updateHistoryAvailability()
+        normalizeSelection()
     }
 
     private var projectIndex: Int? {
@@ -225,15 +281,63 @@ final class AppStore: ObservableObject {
     }
 
     private func commit() {
+        let previous = persistedLibrary
         library.revision += 1
-        save()
+        guard saveReportingFailure() else {
+            library = previous
+            return
+        }
+        if previous != library {
+            undoStack.append(previous)
+            if undoStack.count > historyLimit {
+                undoStack.removeFirst(undoStack.count - historyLimit)
+            }
+            redoStack.removeAll()
+        }
+        persistedLibrary = library
+        updateHistoryAvailability()
     }
 
     private func save() {
+        _ = saveReportingFailure()
+        persistedLibrary = library
+    }
+
+    private func saveReportingFailure() -> Bool {
         do {
             try TodoPersistence.save(library, to: dataURL)
+            return true
         } catch {
             errorMessage = "Could not save changes: \(error.localizedDescription)"
+            return false
         }
+    }
+
+    private func acceptExternalLibrary() {
+        persistedLibrary = library
+        undoStack.removeAll()
+        redoStack.removeAll()
+        updateHistoryAvailability()
+        normalizeSelection()
+    }
+
+    private func normalizeSelection() {
+        if !library.projects.contains(where: { $0.id == selectedProjectID }) {
+            selectedProjectID = library.projects.first?.id
+        }
+        if selectedList == nil {
+            selectedListID = selectedProject?.lists.first?.id
+        }
+    }
+
+    private func revisionBumped(_ snapshot: TodoLibrary, after current: TodoLibrary) -> TodoLibrary {
+        var result = snapshot
+        result.revision = max(snapshot.revision, current.revision) + 1
+        return result
+    }
+
+    private func updateHistoryAvailability() {
+        canUndo = !undoStack.isEmpty
+        canRedo = !redoStack.isEmpty
     }
 }

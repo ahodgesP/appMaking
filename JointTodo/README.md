@@ -7,7 +7,7 @@ and configurable timestamps.
 
 ## Current scope: local agents only
 
-JointTodo 0.4 is intentionally local-only. It has no cloud service, hosted API,
+JointTodo 0.5 is intentionally local-only. It has no cloud service, hosted API,
 browser extension, account system, sync server, MCP server, or public URL.
 
 A local agent such as Codex or another locally running LLM tool can use
@@ -25,7 +25,8 @@ version.
 - Projects, lists, tasks, and nested subtasks
 - Collapsible subtask groups at every nesting level
 - Drag-and-drop ordering for projects, lists, tasks, and nested tasks
-- Task promotion and nesting by dropping above, below, or inside another task
+- Explicit task promotion and nesting with horizontal drag gestures
+- Command-Z undo and Shift-Command-Z redo for GUI changes
 - Native macOS GUI with inline renaming and multi-select project deletion
 - Click-and-drag project range selection
 - Automatic parent/list completion when all children are complete
@@ -85,8 +86,11 @@ selected project, and the right column contains the selected list's tasks.
 - Use the plus button beside a task to add a subtask.
 - Use the chevron beside a task to collapse or expand its subtasks.
 - Drag the handle beside any project, list, or task to reorder it.
-- Drop a task above or below another task to place it at that task's level; drop
-  it in the center to make it a subtask.
+- Drag a task vertically to reorder it at the destination task's level.
+- While dragging a task, move right to nest it or left to promote it. A line
+  previews reordering, a full outline previews nesting, and a left arrow
+  previews promotion.
+- Press Command-Z to undo or Shift-Command-Z to redo GUI changes.
 - Click a completion circle to change status.
 - Command-click, Shift-click, or click-drag to select multiple projects.
 - Press Delete to remove selected projects or the selected list.
