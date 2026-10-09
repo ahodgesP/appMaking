@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var listReorderTargetID: UUID?
     @State private var taskReorderTargetID: UUID?
     @State private var taskReorderPlacement: TaskDropPlacement?
+    @State private var collapsedTaskIDs: Set<UUID> = []
     @FocusState private var projectPaneFocused: Bool
     private let refreshTimer = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
 
@@ -196,6 +197,7 @@ struct ContentView: View {
                                     depth: 0,
                                     reorderTargetID: taskReorderTargetID,
                                     reorderPlacement: taskReorderPlacement,
+                                    collapsedTaskIDs: $collapsedTaskIDs,
                                     onReorderDragChanged: { updateTaskReorder(in: list, itemID: $0, value: $1) },
                                     onReorderDragEnded: { finishTaskReorder(in: list, itemID: $0, value: $1) }
                                 )
@@ -213,6 +215,20 @@ struct ContentView: View {
                         Label("Add Item", systemImage: "plus")
                     }
                     .floatingHelp("Create a new item in this list")
+                    Button { toggleAllTasks(in: list) } label: {
+                        Label(
+                            allCollapsibleTasksAreCollapsed(in: list) ? "Expand All" : "Collapse All",
+                            systemImage: allCollapsibleTasksAreCollapsed(in: list)
+                                ? "rectangle.expand.vertical"
+                                : "rectangle.compress.vertical"
+                        )
+                    }
+                    .disabled(collapsibleTaskIDs(in: list).isEmpty)
+                    .floatingHelp(
+                        allCollapsibleTasksAreCollapsed(in: list)
+                            ? "Expand all sub-items in this list"
+                            : "Collapse all sub-items in this list"
+                    )
                     Button(action: store.reload) {
                         Label("Reload", systemImage: "arrow.clockwise")
                     }
@@ -380,7 +396,30 @@ struct ContentView: View {
               targetID != itemID,
               let targetFrame = taskRowFrames[targetID] else { return }
         let placement = taskPlacement(in: list, targetID: targetID, targetFrame: targetFrame, value: value)
+        if placement == .inside { collapsedTaskIDs.remove(targetID) }
         store.moveItem(in: list.id, itemID: itemID, relativeTo: targetID, placement: placement)
+    }
+
+    private func collapsibleTaskIDs(in list: TodoList) -> Set<UUID> {
+        Set(list.items.compactMap { item in
+            list.children(of: item.id).isEmpty ? nil : item.id
+        })
+    }
+
+    private func allCollapsibleTasksAreCollapsed(in list: TodoList) -> Bool {
+        let collapsibleIDs = collapsibleTaskIDs(in: list)
+        return !collapsibleIDs.isEmpty && collapsibleIDs.isSubset(of: collapsedTaskIDs)
+    }
+
+    private func toggleAllTasks(in list: TodoList) {
+        let collapsibleIDs = collapsibleTaskIDs(in: list)
+        withAnimation(.easeInOut(duration: 0.15)) {
+            if collapsibleIDs.isSubset(of: collapsedTaskIDs) {
+                collapsedTaskIDs.subtract(collapsibleIDs)
+            } else {
+                collapsedTaskIDs.formUnion(collapsibleIDs)
+            }
+        }
     }
 
     private func taskPlacement(
@@ -552,11 +591,12 @@ private struct TaskRow: View {
     let depth: Int
     let reorderTargetID: UUID?
     let reorderPlacement: TaskDropPlacement?
+    @Binding var collapsedTaskIDs: Set<UUID>
     let onReorderDragChanged: (UUID, DragGesture.Value) -> Void
     let onReorderDragEnded: (UUID, DragGesture.Value) -> Void
-    @State private var isExpanded = true
 
     private var children: [TaskItem] { list.children(of: item.id) }
+    private var isExpanded: Bool { !collapsedTaskIDs.contains(item.id) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -567,7 +607,11 @@ private struct TaskRow: View {
                 } else {
                     Button {
                         withAnimation(.easeInOut(duration: 0.15)) {
-                            isExpanded.toggle()
+                            if isExpanded {
+                                collapsedTaskIDs.insert(item.id)
+                            } else {
+                                collapsedTaskIDs.remove(item.id)
+                            }
                         }
                     } label: {
                         Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
@@ -599,7 +643,7 @@ private struct TaskRow: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                 Button {
-                    isExpanded = true
+                    collapsedTaskIDs.remove(item.id)
                     store.addItem(to: list.id, parentID: item.id)
                 } label: {
                     Image(systemName: "plus.circle")
@@ -641,6 +685,7 @@ private struct TaskRow: View {
                         depth: depth + 1,
                         reorderTargetID: reorderTargetID,
                         reorderPlacement: reorderPlacement,
+                        collapsedTaskIDs: $collapsedTaskIDs,
                         onReorderDragChanged: onReorderDragChanged,
                         onReorderDragEnded: onReorderDragEnded
                     )

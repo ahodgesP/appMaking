@@ -24,6 +24,7 @@ version.
 
 - Projects, lists, tasks, and nested subtasks
 - Collapsible subtask groups at every nesting level
+- One-click collapse/expand all for the current list
 - Drag-and-drop ordering for projects, lists, tasks, and nested tasks
 - Explicit task promotion and nesting with horizontal drag gestures
 - Command-Z undo and Shift-Command-Z redo for GUI changes
@@ -85,6 +86,8 @@ selected project, and the right column contains the selected list's tasks.
 - Use the input above the task area to add a task.
 - Use the plus button beside a task to add a subtask.
 - Use the chevron beside a task to collapse or expand its subtasks.
+- Use the toolbar's Collapse All/Expand All button to toggle every subtask group
+  in the current list.
 - Drag the handle beside any project, list, or task to reorder it.
 - Drag a task vertically to reorder it at the destination task's level.
 - While dragging a task, move right to nest it or left to promote it. A line
